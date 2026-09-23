@@ -82,38 +82,39 @@ class TelegramNotifier:
 # ==========================================
 # २. BLACK-SCHOLES GREEKS ENGINE
 # ==========================================
-class OptionGreeks:
-    def _init_(self, spot: float, strike: float, dte: float, iv: float = 0.14, r: float = 0.07):
-        self.S = float(spot)
-        self.K = float(strike)
-        self.T = max(float(dte), 0.0001) / 365.0
-        self.v = max(float(iv), 0.0001)
-        self.r = float(r)
+from scipy.stats import norm
+import numpy as np
 
-        self.d1 = (np.log(self.S / self.K) + (self.r + 0.5 * self.v ** 2) * self.T) / (self.v * np.sqrt(self.T))
-        self.d2 = self.d1 - self.v * np.sqrt(self.T)
+def calculate_greeks(spot, strike, dte, iv=0.14, r=0.07):
+    S = float(spot)
+    K = float(strike)
+    T = max(float(dte), 0.0001) / 365.0
+    v = max(float(iv), 0.0001)
+    rate = float(r)
 
-    def calculate(self):
-        pdf_d1 = norm.pdf(self.d1)
-        delta_ce = norm.cdf(self.d1)
-        delta_pe = delta_ce - 1.0
+    # d1 आणि d2 गणना
+    d1 = (np.log(S / K) + (rate + 0.5 * v ** 2) * T) / (v * np.sqrt(T))
+    d2 = d1 - v * np.sqrt(T)
 
-        gamma = pdf_d1 / (self.S * self.v * np.sqrt(self.T))
-        vega = (self.S * pdf_d1 * np.sqrt(self.T)) / 100.0
+    pdf_d1 = norm.pdf(d1)
+    delta_ce = norm.cdf(d1)
+    delta_pe = delta_ce - 1.0
 
-        term1 = -(self.S * pdf_d1 * self.v) / (2 * np.sqrt(self.T))
-        theta_ce = (term1 - self.r * self.K * np.exp(-self.r * self.T) * norm.cdf(self.d2)) / 365.0
-        theta_pe = (term1 + self.r * self.K * np.exp(-self.r * self.T) * norm.cdf(-self.d2)) / 365.0
+    gamma = pdf_d1 / (S * v * np.sqrt(T))
+    vega = (S * pdf_d1 * np.sqrt(T)) / 100.0
 
-        return {
-            "ce_delta": round(float(delta_ce), 3),
-            "pe_delta": round(float(delta_pe), 3),
-            "gamma": round(float(gamma), 5),
-            "vega": round(float(vega), 2),
-            "ce_theta": round(float(theta_ce), 2),
-            "pe_theta": round(float(theta_pe), 2)
-        }
+    term1 = -(S * pdf_d1 * v) / (2 * np.sqrt(T))
+    theta_ce = (term1 - rate * K * np.exp(-rate * T) * norm.cdf(d2)) / 365.0
+    theta_pe = (term1 + rate * K * np.exp(-rate * T) * norm.cdf(-d2)) / 365.0
 
+    return {
+        "ce_delta": round(float(delta_ce), 3),
+        "pe_delta": round(float(delta_pe), 3),
+        "gamma": round(float(gamma), 5),
+        "vega": round(float(vega), 2),
+        "ce_theta": round(float(theta_ce), 2),
+        "pe_theta": round(float(theta_pe), 2)
+    }
 # ==========================================
 # ३. EMA TOUCH & CROSSOVER DETECTOR
 # ==========================================
