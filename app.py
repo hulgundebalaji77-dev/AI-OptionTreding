@@ -151,7 +151,7 @@ def analyze_ema(candles_df: pd.DataFrame, period: int = 9, buffer_pts: float = 2
 # ==========================================
 # ४. STREAMLIT UI & INTERFACE
 # ==========================================
-st.set_page_config(layout="wide", page_title="Unified Options Algo Desk", page_icon="⚡")
+st.set_page_config(layout="wide", page_title="BALAJI Options Algo Desk", page_icon="⚡")
 
 # Custom Dark Trading Theme
 st.markdown("""
@@ -165,7 +165,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Unified Options Pro: Trading & Algo Terminal")
+st.title("⚡ BALAJI Options Pro: Trading & Algo Terminal")
 
 # SIDEBAR: Settings & Telegram
 with st.sidebar:
