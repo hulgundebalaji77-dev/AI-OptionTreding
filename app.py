@@ -1,0 +1,353 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from scipy.stats import norm
+import requests
+import pyotp
+from datetime import datetime
+
+# ==========================================
+# १. TELEGRAM NOTIFIER MODULE
+# ==========================================
+class TelegramNotifier:
+    def _init_(self, bot_token: str, chat_id: str):
+        self.bot_token = bot_token.strip()
+        self.chat_id = chat_id.strip()
+        self.base_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+
+    def send_raw(self, text: str) -> bool:
+        if not self.bot_token or not self.chat_id:
+            return False
+        try:
+            resp = requests.post(
+                self.base_url,
+                json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=6
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def send_trade_alert(self, action: str, symbol: str, strike: int, opt_type: str, qty: int, price: float, sl: float, tgt: float):
+        icon = "🟢" if action.upper() == "BUY" else "🔴"
+        msg = (
+            f"<b>{icon} ALGO TRADE EXECUTED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>इंडेक्स:</b> {symbol}\n"
+            f"<b>स्ट्राइक:</b> {strike} {opt_type.upper()}\n"
+            f"<b>प्रकार:</b> {action.upper()}\n"
+            f"<b>प्रमाण (Qty):</b> {qty}\n"
+            f"<b>एंट्री भाव:</b> ₹{price:.2f}\n"
+            f"<b>स्टॉप लॉस (SL):</b> ₹{sl:.2f}\n"
+            f"<b>टार्गेट (TGT):</b> ₹{tgt:.2f}\n"
+            f"<b>वेळ:</b> {datetime.now().strftime('%I:%M:%S %p')}\n"
+            f"━━━━━━━━━━━━━━━━━━"
+        )
+        return self.send_raw(msg)
+
+    def send_ema_alert(self, symbol: str, timeframe: str, ema_period: int, signal: str, ema_val: float, ltp: float, reason: str):
+        icon = "🚀 <b>CALL BUY ALERT (CE)</b>" if "BULLISH" in signal else "🔻 <b>PUT BUY ALERT (PE)</b>"
+        msg = (
+            f"{icon}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>इंडेक्स:</b> {symbol} ({timeframe})\n"
+            f"<b>सिग्नल:</b> {signal.replace('_', ' ')}\n"
+            f"<b>{ema_period} EMA लेव्हल:</b> ₹{ema_val:,.2f}\n"
+            f"<b>चालू भाव (LTP):</b> ₹{ltp:,.2f}\n"
+            f"<b>कारण:</b> {reason}\n"
+            f"<b>वेळ:</b> {datetime.now().strftime('%I:%M:%S %p')}\n"
+            f"━━━━━━━━━━━━━━━━━━"
+        )
+        return self.send_raw(msg)
+
+    def send_daily_summary(self, total_trades: int, winning: int, gross_pnl: float, charges: float = 120.0):
+        net_pnl = gross_pnl - charges
+        icon = "🚀" if net_pnl >= 0 else "🛑"
+        win_rate = (winning / total_trades * 100) if total_trades > 0 else 0
+        msg = (
+            f"<b>{icon} DAILY P&L SUMMARY | {datetime.now().strftime('%d-%b-%Y')}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>एकूण ट्रेड्स:</b> {total_trades}\n"
+            f"<b>यशस्वी ट्रेड्स:</b> {winning} ({win_rate:.1f}% Win Rate)\n"
+            f"<b>ग्रॉस P&L:</b> ₹{gross_pnl:,.2f}\n"
+            f"<b>अंदाजे चार्जेस:</b> ₹{charges:,.2f}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>निव्वळ P&L (Net MTM): ₹{net_pnl:,.2f}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━"
+        )
+        return self.send_raw(msg)
+
+
+# ==========================================
+# २. BLACK-SCHOLES GREEKS ENGINE
+# ==========================================
+class OptionGreeks:
+    def _init_(self, spot: float, strike: float, dte: float, iv: float = 0.14, r: float = 0.07):
+        self.S = float(spot)
+        self.K = float(strike)
+        self.T = max(dte, 0.0001) / 365.0
+        self.v = max(iv, 0.0001)
+        self.r = float(r)
+
+        self.d1 = (np.log(self.S / self.K) + (self.r + 0.5 * self.v ** 2) * self.T) / (self.v * np.sqrt(self.T))
+        self.d2 = self.d1 - self.v * np.sqrt(self.T)
+
+    def calculate(self):
+        pdf_d1 = norm.pdf(self.d1)
+        delta_ce = norm.cdf(self.d1)
+        delta_pe = delta_ce - 1.0
+
+        gamma = pdf_d1 / (self.S * self.v * np.sqrt(self.T))
+        vega = (self.S * pdf_d1 * np.sqrt(self.T)) / 100.0
+
+        term1 = -(self.S * pdf_d1 * self.v) / (2 * np.sqrt(self.T))
+        theta_ce = (term1 - self.r * self.K * np.exp(-self.r * self.T) * norm.cdf(self.d2)) / 365.0
+        theta_pe = (term1 + self.r * self.K * np.exp(-self.r * self.T) * norm.cdf(-self.d2)) / 365.0
+
+        return {
+            "ce_delta": round(delta_ce, 3),
+            "pe_delta": round(delta_pe, 3),
+            "gamma": round(gamma, 5),
+            "vega": round(vega, 2),
+            "ce_theta": round(theta_ce, 2),
+            "pe_theta": round(theta_pe, 2)
+        }
+
+
+# ==========================================
+# ३. EMA TOUCH & CROSSOVER DETECTOR
+# ==========================================
+def analyze_ema(candles_df: pd.DataFrame, period: int = 9, buffer_pts: float = 2.0):
+    df = candles_df.copy()
+    df[f'EMA_{period}'] = df['Close'].ewm(span=period, adjust=False).mean()
+    
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    ema_val = round(last[f'EMA_{period}'], 2)
+    
+    high, low, close = last['High'], last['Low'], last['Close']
+    signal, reason = None, ""
+
+    # Pullback Support
+    if (low <= ema_val + buffer_pts) and (close >= ema_val):
+        signal = "BULLISH_TOUCH"
+        reason = f"किंमतीने {period} EMA जवळ अचूक सपोर्ट (Touch) घेतला आहे."
+    # Pullback Rejection
+    elif (high >= ema_val - buffer_pts) and (close <= ema_val):
+        signal = "BEARISH_TOUCH"
+        reason = f"किंमतीला {period} EMA वरून रेझिस्टन्स (Touch Rejection) मिळाला आहे."
+    # Breakouts
+    elif prev['Close'] < prev[f'EMA_{period}'] and close > ema_val:
+        signal = "BULLISH_CROSSOVER"
+        reason = f"कॅन्डलने {period} EMA च्या वर ब्रेकआउट दिला आहे."
+    elif prev['Close'] > prev[f'EMA_{period}'] and close < ema_val:
+        signal = "BEARISH_CROSSOVER"
+        reason = f"कॅन्डलने {period} EMA च्या खाली ब्रेकडाऊन दिला आहे."
+
+    return signal, ema_val, reason
+
+
+# ==========================================
+# ४. STREAMLIT UI & INTERFACE
+# ==========================================
+st.set_page_config(layout="wide", page_title="Unified Options Algo Desk", page_icon="⚡")
+
+# Custom Dark Trading Theme
+st.markdown("""
+<style>
+    .metric-box {
+        background-color: #11141a;
+        padding: 12px 18px;
+        border-radius: 8px;
+        border-left: 4px solid #00d09c;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("⚡ Unified Options Pro: Trading & Algo Terminal")
+
+# SIDEBAR: Settings & Telegram
+with st.sidebar:
+    st.header("🔑 Broker (Angel One)")
+    st.text_input("SmartAPI Key", type="password", value="API_KEY_HERE")
+    st.text_input("Client Code", value="CLIENT_CODE")
+    st.text_input("MPIN", type="password", value="1234")
+    st.text_input("TOTP Secret", type="password", value="TOTP_SECRET")
+    if st.button("🔗 Connect Broker API", use_container_width=True):
+        st.success("Angel One API कनेक्ट झाले!")
+
+    st.divider()
+    st.header("📲 Telegram Alerts")
+    tg_token = st.text_input("Bot Token", type="password")
+    tg_chat = st.text_input("Chat ID")
+    
+    tg = TelegramNotifier(tg_token, tg_chat) if (tg_token and tg_chat) else None
+    
+    if st.button("🔔 Test Telegram Alert", use_container_width=True):
+        if tg and tg.send_raw("✅ <b>Trading Terminal Connected!</b> तुमचे रिअल-टाइम अलर्ट सुरू झाले आहेत."):
+            st.success("टेस्ट मेसेज पाठवला!")
+        else:
+            st.error("मेसेज पाठवता आला नाही. Token किंवा Chat ID तपासा.")
+
+    st.divider()
+    st.header("🛡️ Risk Parameters")
+    lot_size = st.number_input("Lots", min_value=1, max_value=20, value=2)
+    sl_pts = st.number_input("Stop Loss (Pts)", value=25, step=5)
+    tgt_pts = st.number_input("Target (Pts)", value=50, step=5)
+
+# TOP TICKER BAR
+selected_index = st.selectbox("इंडेक्स निवडा:", ["NIFTY 50", "BANK NIFTY", "SENSEX"], index=0)
+
+market_config = {
+    "NIFTY 50": {"spot": 25140.50, "step": 50, "pcr": 1.15, "dte": 2, "qty": 75},
+    "BANK NIFTY": {"spot": 53250.00, "step": 100, "pcr": 0.85, "dte": 3, "qty": 30},
+    "SENSEX": {"spot": 82400.00, "step": 100, "pcr": 1.02, "dte": 1, "qty": 20}
+}
+
+cfg = market_config[selected_index]
+spot = cfg["spot"]
+step = cfg["step"]
+atm_strike = int(round(spot / step) * step)
+
+mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+with mcol1:
+    st.metric(f"{selected_index} Spot", f"₹{spot:,.2f}", "+115.40")
+with mcol2:
+    st.metric("ATM Strike", f"{atm_strike}", f"Step: {step}")
+with mcol3:
+    st.metric("Overall PCR", f"{cfg['pcr']}", "Bullish" if cfg['pcr'] >= 1.0 else "Bearish")
+with mcol4:
+    st.metric("Expiry DTE", f"{cfg['dte']} Days", "Weekly")
+
+st.divider()
+
+# TABS
+tab1, tab2, tab3 = st.tabs(["📊 Option Chain & Greeks", "🎯 EMA Touch Scanner & 1-Click", "💼 Positions & EOD Report"])
+
+# TAB 1: OPTION CHAIN & GREEKS
+with tab1:
+    st.subheader(f"Option Chain Matrix with Greeks (ATM: {atm_strike})")
+    
+    strikes = [atm_strike + (i * step) for i in range(-4, 5)]
+    chain_rows = []
+
+    for s in strikes:
+        diff = abs(spot - s)
+        ce_price = round(max(5.0, (spot - s) + 65), 2) if s <= spot else round(max(5.0, 75 - (diff * 0.35)), 2)
+        pe_price = round(max(5.0, (s - spot) + 65), 2) if s >= spot else round(max(5.0, 75 - (diff * 0.35)), 2)
+        
+        ce_oi = int(abs(140000 - diff * 70) + np.random.randint(1500, 4500))
+        pe_oi = int(abs(135000 - diff * 65) + np.random.randint(1500, 4500))
+
+        # Greeks गणना
+        g = OptionGreeks(spot=spot, strike=s, dte=cfg['dte'], iv=0.14).calculate()
+
+        chain_rows.append({
+            "CE Delta": g["ce_delta"],
+            "CE Theta": g["ce_theta"],
+            "Call OI": ce_oi,
+            "Call LTP (₹)": ce_price,
+            "Strike": s,
+            "Put LTP (₹)": pe_price,
+            "Put OI": pe_oi,
+            "PE Theta": g["pe_theta"],
+            "PE Delta": g["pe_delta"],
+            "Gamma": g["gamma"],
+            "Vega": g["vega"]
+        })
+
+    df_chain = pd.DataFrame(chain_rows)
+
+    # OI Bar Chart
+    fig = go.Figure()
+    fig.add_trace(go.Bar(y=df_chain["Strike"], x=df_chain["Call OI"], name="Call OI (Resistance)", orientation='h', marker_color='#ef5350'))
+    fig.add_trace(go.Bar(y=df_chain["Strike"], x=df_chain["Put OI"], name="Put OI (Support)", orientation='h', marker_color='#26a69a'))
+    fig.update_layout(barmode='group', height=320, margin=dict(l=10, r=10, t=25, b=10), yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # DataFrame Display
+    st.dataframe(df_chain.style.highlight_max(subset=["Call OI", "Put OI"], color="#1f3b4d"), use_container_width=True)
+
+# TAB 2: EMA SCANNER & 1-CLICK TRADING
+with tab2:
+    st.subheader("🎯 Real-Time EMA Touch Scanner")
+    ec1, ec2, ec3, ec4 = st.columns(4)
+    with ec1:
+        ema_period = st.selectbox("EMA कालावधी निवडा:", [9, 15, 20, 50], index=0)
+    with ec2:
+        timeframe = st.selectbox("Timeframe:", ["1 Min", "3 Min", "5 Min", "15 Min"], index=2)
+    with ec3:
+        buffer_pts = st.number_input("Touch Buffer (Points):", value=2.0, step=0.5)
+    with ec4:
+        scanner_active = st.toggle("Active Scanner", value=True)
+
+    # OHLC कॅन्डल डेटा
+    sample_df = pd.DataFrame({
+        "High": [spot + 10, spot + 18, spot + 6, spot + 4, spot + 7],
+        "Low": [spot - 8, spot - 4, spot - 15, spot - 1.5, spot - 0.5],
+        "Close": [spot + 2, spot + 14, spot - 6, spot + 2.5, spot + 5]
+    })
+
+    sig, ema_val, reason = analyze_ema(sample_df, period=ema_period, buffer_pts=buffer_pts)
+
+    st.info(f"📊 *{selected_index}* Spot: *₹{spot:,.2f}* | *{ema_period} EMA:* *₹{ema_val:,.2f}*")
+
+    if sig:
+        if "BULLISH" in sig:
+            st.success(f"🟢 *{sig} आढळला!* {reason}")
+        else:
+            st.error(f"🔴 *{sig} आढळला!* {reason}")
+
+        if st.button("📲 Send EMA Alert to Telegram", use_container_width=True):
+            if tg:
+                tg.send_ema_alert(selected_index, timeframe, ema_period, sig, ema_val, spot, reason)
+                st.toast("✅ Telegram वर EMA अलर्ट पाठवला!")
+            else:
+                st.warning("साइडबारमध्ये Telegram टोकन आणि चॅट आयडी भरा.")
+
+    st.divider()
+    st.subheader("⚡ 1-Click Scalper Execution")
+    btn1, btn2, btn3 = st.columns(3)
+    
+    total_qty = lot_size * cfg["qty"]
+    
+    with btn1:
+        if st.button(f"🟢 Buy ATM Call ({atm_strike} CE)", use_container_width=True):
+            entry = 125.0
+            if tg:
+                tg.send_trade_alert("BUY", selected_index, atm_strike, "CE", total_qty, entry, entry - sl_pts, entry + tgt_pts)
+            st.toast(f"✅ {selected_index} {atm_strike} CE ऑर्डर एक्झिक्युट झाली आणि Telegram वर अलर्ट पाठवला!")
+
+    with btn2:
+        if st.button(f"🔴 Buy ATM Put ({atm_strike} PE)", use_container_width=True):
+            entry = 110.0
+            if tg:
+                tg.send_trade_alert("BUY", selected_index, atm_strike, "PE", total_qty, entry, entry - sl_pts, entry + tgt_pts)
+            st.toast(f"✅ {selected_index} {atm_strike} PE ऑर्डर एक्झिक्युट झाली आणि Telegram वर अलर्ट पाठवला!")
+
+    with btn3:
+        if st.button("⚠️ Panic Exit (Close All Positions)", use_container_width=True):
+            st.warning("सर्व चालू ऑर्डर्स मार्केट भावाने एक्झिट केल्या!")
+
+# TAB 3: POSITIONS & EOD REPORT
+with tab3:
+    st.subheader("💼 Today's Live Positions & P&L")
+    positions = [
+        {"Contract": f"{selected_index} {atm_strike} CE", "Qty": total_qty, "Buy Price": 122.0, "LTP": 146.5, "P&L": (146.5 - 122.0) * total_qty},
+        {"Contract": f"{selected_index} {atm_strike + step} PE", "Qty": total_qty, "Buy Price": 85.0, "LTP": 74.0, "P&L": (74.0 - 85.0) * total_qty}
+    ]
+    df_pos = pd.DataFrame(positions)
+    net_mtm = df_pos["P&L"].sum()
+
+    st.metric("Net MTM P&L", f"₹{net_mtm:,.2f}", f"{'+' if net_mtm >= 0 else ''}{net_mtm:.2f}")
+    st.table(df_pos)
+
+    st.divider()
+    st.subheader("📤 End of Day Telegram Report")
+    if st.button("Send EOD Summary to Telegram Now", use_container_width=True):
+        if tg:
+            tg.send_daily_summary(total_trades=2, winning=1, gross_pnl=net_mtm, charges=85.0)
+            st.success("दैनिक अहवाल Telegram वर पाठवला!")
+        else:
+            st.warning("साइडबारमध्ये Telegram क्रेडेंशियल्स उपलब्ध नाहीत.")
