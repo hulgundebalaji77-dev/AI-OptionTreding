@@ -86,8 +86,8 @@ class OptionGreeks:
     def _init_(self, spot: float, strike: float, dte: float, iv: float = 0.14, r: float = 0.07):
         self.S = float(spot)
         self.K = float(strike)
-        self.T = max(dte, 0.0001) / 365.0
-        self.v = max(iv, 0.0001)
+        self.T = max(float(dte), 0.0001) / 365.0
+        self.v = max(float(iv), 0.0001)
         self.r = float(r)
 
         self.d1 = (np.log(self.S / self.K) + (self.r + 0.5 * self.v ** 2) * self.T) / (self.v * np.sqrt(self.T))
@@ -106,14 +106,13 @@ class OptionGreeks:
         theta_pe = (term1 + self.r * self.K * np.exp(-self.r * self.T) * norm.cdf(-self.d2)) / 365.0
 
         return {
-            "ce_delta": round(delta_ce, 3),
-            "pe_delta": round(delta_pe, 3),
-            "gamma": round(gamma, 5),
-            "vega": round(vega, 2),
-            "ce_theta": round(theta_ce, 2),
-            "pe_theta": round(theta_pe, 2)
+            "ce_delta": round(float(delta_ce), 3),
+            "pe_delta": round(float(delta_pe), 3),
+            "gamma": round(float(gamma), 5),
+            "vega": round(float(vega), 2),
+            "ce_theta": round(float(theta_ce), 2),
+            "pe_theta": round(float(theta_pe), 2)
         }
-
 
 # ==========================================
 # ३. EMA TOUCH & CROSSOVER DETECTOR
