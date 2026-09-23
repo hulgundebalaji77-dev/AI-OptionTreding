@@ -241,8 +241,7 @@ with tab1:
         pe_oi = int(abs(135000 - diff * 65) + np.random.randint(1500, 4500))
 
         # Greeks गणना
-        g = OptionGreeks(spot=spot, strike=s, dte=cfg['dte'], iv=0.14).calculate()
-
+        g = calculate_greeks(spot=spot, strike=s, dte=cfg['dte'], iv=0.14)
         chain_rows.append({
             "CE Delta": g["ce_delta"],
             "CE Theta": g["ce_theta"],
