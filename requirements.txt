@@ -1,8 +1,6 @@
-streamlit
-plotly
+smartapi-python
+logzero
 pandas
 numpy
-scipy
 requests
-pyotp
-smartapi-python
+streamlit
