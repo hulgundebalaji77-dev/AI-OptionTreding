@@ -1,6 +1,8 @@
 smartapi-python
 logzero
+websocket-client
 pandas
 numpy
 requests
 streamlit
+
